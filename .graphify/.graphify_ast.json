@@ -1,0 +1,66 @@
+{
+  "nodes": [
+    {
+      "id": "creditsserviceapplication",
+      "label": "CreditsServiceApplication.java",
+      "file_type": "code",
+      "source_file": "src/main/java/com/yanki/credits/CreditsServiceApplication.java",
+      "source_location": "L1"
+    },
+    {
+      "id": "creditsserviceapplication_creditsserviceapplication",
+      "label": "CreditsServiceApplication",
+      "file_type": "code",
+      "source_file": "src/main/java/com/yanki/credits/CreditsServiceApplication.java",
+      "source_location": "L15"
+    },
+    {
+      "id": "creditsserviceapplication_creditsserviceapplication_main",
+      "label": ".main()",
+      "file_type": "code",
+      "source_file": "src/main/java/com/yanki/credits/CreditsServiceApplication.java",
+      "source_location": "L23"
+    }
+  ],
+  "edges": [
+    {
+      "source": "creditsserviceapplication",
+      "target": "springapplication",
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main/java/com/yanki/credits/CreditsServiceApplication.java",
+      "source_location": "L3",
+      "weight": 1
+    },
+    {
+      "source": "creditsserviceapplication",
+      "target": "springbootapplication",
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main/java/com/yanki/credits/CreditsServiceApplication.java",
+      "source_location": "L4",
+      "weight": 1
+    },
+    {
+      "source": "creditsserviceapplication",
+      "target": "creditsserviceapplication_creditsserviceapplication",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main/java/com/yanki/credits/CreditsServiceApplication.java",
+      "source_location": "L15",
+      "weight": 1
+    },
+    {
+      "source": "creditsserviceapplication_creditsserviceapplication",
+      "target": "creditsserviceapplication_creditsserviceapplication_main",
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "src/main/java/com/yanki/credits/CreditsServiceApplication.java",
+      "source_location": "L23",
+      "weight": 1
+    }
+  ],
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "hyperedges": []
+}

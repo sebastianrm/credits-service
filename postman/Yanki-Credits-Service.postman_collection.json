@@ -1,0 +1,979 @@
+{
+	"info": {
+		"_postman_id": "c3d4e5f6-a7b8-9012-cdef-345678901234",
+		"name": "Yanki - Credits Service",
+		"description": "Colección completa de pruebas del microservicio credits-service (puerto 8084).\n\nCubre los 10 casos de prueba (CP-075 a CP-084) validados en las pruebas JUnit del servicio.\nIncluye CRUD completo de créditos y pagos, consulta de cronogramas con caché Redis, y job de detección de mora.\n\n**Arquitectura Hexagonal:** Dominio puro con RxJava 3, puertos de entrada/salida, adaptadores MongoDB/Redis/Kafka.\n**Stack:** Java 17, Spring Boot 3.3.5, RxJava 3, MongoDB, Redis, Kafka, Eureka, Resilience4j.\n\n**Referencias:**\n- Casos de Uso: CU-03 (Gestión de Créditos), CU-06 (Pagos de Créditos)\n- Diagramas: SEC025, SEC026, SEC027, SEC028, SEC029\n- Test Cases: `../test-cases/README.md`\n- Pruebas JUnit: `src/test/java/com/yanki/credits/domain/service/`",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8084",
+			"type": "string",
+			"description": "URL base del credits-service. En producción, use la URL del API Gateway (puerto 8080)."
+		},
+		{
+			"key": "creditId",
+			"value": "cred-abc123",
+			"type": "string",
+			"description": "ID de un crédito creado para pruebas. Actualice después de crear un crédito."
+		},
+		{
+			"key": "paymentId",
+			"value": "pay-xyz789",
+			"type": "string",
+			"description": "ID de un pago registrado para pruebas. Actualice después de registrar un pago."
+		},
+		{
+			"key": "customerId",
+			"value": "cust-12345",
+			"type": "string",
+			"description": "ID de un cliente PERSONAL ACTIVE para pruebas de créditos personales."
+		},
+		{
+			"key": "enterpriseCustomerId",
+			"value": "cust-ent-001",
+			"type": "string",
+			"description": "ID de un cliente ENTERPRISE ACTIVE para pruebas de créditos empresariales."
+		},
+		{
+			"key": "overdueCustomerId",
+			"value": "cust-overdue-001",
+			"type": "string",
+			"description": "ID de un cliente con deuda vencida (hasOverdueDebt=true) para pruebas de bloqueo."
+		},
+		{
+			"key": "jwtToken",
+			"value": "",
+			"type": "string",
+			"description": "Token JWT de autenticación. En desarrollo local puede estar vacío. En producción, obtenga del auth-service vía API Gateway."
+		}
+	],
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{jwtToken}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Pre-request script global",
+					"// Si jwtToken está vacío, deshabilitar auth para desarrollo local",
+					"if (pm.collectionVariables.get('jwtToken') === '') {",
+					"    pm.request.auth.clear();",
+					"}"
+				]
+			}
+		}
+	],
+	"item": [
+		{
+			"name": "CU-03: Gestión de Créditos",
+			"description": "Apertura, consulta, actualización y cancelación de créditos personales y empresariales.\n\n**Referencia:** `../test-cases/README.md` — CP-075 a CP-078, CP-082, CP-083, CP-084\n**Diagramas:** SEC025, SEC026, SEC028, SEC029",
+			"item": [
+				{
+					"name": "CP-075: Apertura de crédito personal exitosa",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"customerId\": \"{{customerId}}\",\n    \"type\": \"PERSONAL\",\n    \"amount\": 10000.00,\n    \"interestRate\": 12.50,\n    \"termMonths\": 12\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/credits",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits"]
+						},
+						"description": "**Caso de Prueba:** CP-075\n**CU:** CU-03 | **SEC:** SEC025_apertura_credito_personal.md\n**Tipo:** Happy Path\n\n### Precondiciones\n- Cliente PERSONAL ACTIVE en el sistema\n- Sin crédito personal vigente (límite de 1 crédito PERSONAL activo)\n- Sin deuda vencida (`hasOverdueDebt=false`)\n- Scoring aprueba: monto entre 100 y 50,000; tasa entre 0.01% y 50%; plazo entre 1 y 36 meses\n- `customer_profile_view` y `customer_risk_view` pobladas\n\n### Pasos\n1. Enviar POST /api/credits con tipo PERSONAL, monto 10,000, tasa 12.50%, plazo 12 meses\n2. Validar 201 Created con creditId, creditNumber, status=APPROVED, outstandingBalance=10000\n3. Verificar que el cronograma de pagos se genera automáticamente (sistema francés, 12 cuotas fijas)\n4. Verificar Redis: `yanki:credits:schedule:{creditId}` poblado con el cronograma\n5. Verificar evento `yanki.credit.opened.v1` publicado en Kafka\n\n### Respuesta Esperada\n- **HTTP Status:** 201 Created\n- **Body:** CreditResponseDto con id, customerId, type=PERSONAL, status=APPROVED, principalAmount=10000, schedule con 12 cuotas\n\n### Postcondiciones\nCrédito personal activo con cronograma de 12 cuotas generadas."
+					},
+					"response": [
+						{
+							"name": "201 Created - Crédito personal aprobado",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"customerId\": \"cust-12345\",\n    \"type\": \"PERSONAL\",\n    \"amount\": 10000.00,\n    \"interestRate\": 12.50,\n    \"termMonths\": 12\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/credits",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits"]
+								}
+							},
+							"status": "Created",
+							"code": 201,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								},
+								{
+									"key": "Location",
+									"value": "/api/credits/cred-abc123"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"cred-abc123\",\n    \"customerId\": \"cust-12345\",\n    \"type\": \"PERSONAL\",\n    \"status\": \"APPROVED\",\n    \"principalAmount\": 10000.00,\n    \"interestRate\": 12.50,\n    \"termMonths\": 12,\n    \"outstandingBalance\": 10000.00,\n    \"nextDueDate\": \"2026-12-15\",\n    \"firstDueDate\": \"2026-12-15\",\n    \"maturityDate\": \"2027-11-15\",\n    \"paymentFrequency\": \"MONTHLY\",\n    \"purpose\": null,\n    \"schedule\": [\n        {\n            \"installmentNumber\": 1,\n            \"dueDate\": \"2026-12-15\",\n            \"capitalAmount\": 750.58,\n            \"interestAmount\": 104.17,\n            \"feeAmount\": 0.00,\n            \"totalAmount\": 854.75,\n            \"status\": \"PENDING\"\n        },\n        {\n            \"installmentNumber\": 2,\n            \"dueDate\": \"2027-01-15\",\n            \"capitalAmount\": 757.63,\n            \"interestAmount\": 97.12,\n            \"feeAmount\": 0.00,\n            \"totalAmount\": 854.75,\n            \"status\": \"PENDING\"\n        }\n    ],\n    \"approvedAt\": \"2026-11-14T22:00:00\",\n    \"createdAt\": \"2026-11-14T22:00:00\",\n    \"updatedAt\": \"2026-11-14T22:00:00\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "CP-076: Rechazo - Crédito personal duplicado (RN: 1 por persona)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"customerId\": \"{{customerId}}\",\n    \"type\": \"PERSONAL\",\n    \"amount\": 5000.00,\n    \"interestRate\": 10.00,\n    \"termMonths\": 6\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/credits",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits"]
+						},
+      "description": "**Caso de Prueba:** CP-076\n**CU:** CU-03 | **SEC:** SEC025_apertura_credito_personal.md\n**Tipo:** Error / Regla de negocio\n\n### Precondiciones\n- Cliente PERSONAL ya tiene un crédito tipo PERSONAL con status ACTIVE o APPROVED\n- Ejecutar CP-075 primero para crear el crédito inicial\n\n### Pasos\n1. Enviar POST /api/credits con tipo PERSONAL para el mismo customerId\n\n### Respuesta Esperada\n- **HTTP Status:** 409 Conflict\n- **Body:** ErrorDto con error=PERSONAL_CREDIT_LIMIT_EXCEEDED\n\n### Regla de Negocio\nUn cliente PERSONAL solo puede tener 1 crédito personal activo a la vez."
+					},
+					"response": [
+						{
+							"name": "409 Conflict - Crédito personal ya existe",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"customerId\": \"cust-12345\",\n    \"type\": \"PERSONAL\",\n    \"amount\": 5000.00,\n    \"interestRate\": 10.00,\n    \"termMonths\": 6\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/credits",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits"]
+								}
+							},
+							"status": "Conflict",
+							"code": 409,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+       "body": "{\n    \"error\": \"PERSONAL_CREDIT_LIMIT_EXCEEDED\",\n    \"message\": \"El cliente ya tiene un crédito personal activo. Máximo 1 permitido\",\n    \"timestamp\": \"2026-11-14T22:01:00\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "CP-077: Rechazo - Cliente con deuda vencida (bloqueo transversal)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"customerId\": \"{{overdueCustomerId}}\",\n    \"type\": \"PERSONAL\",\n    \"amount\": 3000.00,\n    \"interestRate\": 15.00,\n    \"termMonths\": 12\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/credits",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits"]
+						},
+						"description": "**Caso de Prueba:** CP-077\n**CU:** CU-03 | **SEC:** SEC025_apertura_credito_personal.md\n**Tipo:** Error / Bloqueo transversal\n\n### Precondiciones\n- `customer_risk_view.hasOverdueDebt=true` para el cliente\n- El cliente tiene cuotas vencidas >30 días en otro producto (cuenta, tarjeta, wallet)\n\n### Pasos\n1. Enviar POST /api/credits para el cliente con deuda vencida\n\n### Respuesta Esperada\n- **HTTP Status:** 403 Forbidden\n- **Body:** ErrorDto con error=CUSTOMER_HAS_OVERDUE_DEBT\n\n### Regla de Negocio\nBloqueo transversal: un cliente con mora >30 días en cualquier producto no puede solicitar nuevos créditos."
+					},
+					"response": [
+						{
+							"name": "403 Forbidden - Deuda vencida",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"customerId\": \"cust-overdue-001\",\n    \"type\": \"PERSONAL\",\n    \"amount\": 3000.00,\n    \"interestRate\": 15.00,\n    \"termMonths\": 12\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/credits",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits"]
+								}
+							},
+							"status": "Forbidden",
+							"code": 403,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+       "body": "{\n    \"error\": \"CUSTOMER_HAS_OVERDUE_DEBT\",\n    \"message\": \"El cliente tiene deuda vencida mayor a 30 días. No puede solicitar nuevos productos\",\n    \"timestamp\": \"2026-11-14T22:02:00\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "CP-078: Apertura crédito empresarial exitosa (múltiples permitidos)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"customerId\": \"{{enterpriseCustomerId}}\",\n    \"type\": \"BUSINESS\",\n    \"amount\": 50000.00,\n    \"interestRate\": 10.50,\n    \"termMonths\": 36,\n    \"purpose\": \"Capital de trabajo para expansión\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/credits",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits"]
+						},
+						"description": "**Caso de Prueba:** CP-078\n**CU:** CU-03 | **SEC:** SEC026_apertura_credito_empresarial.md\n**Tipo:** Happy Path\n\n### Precondiciones\n- Cliente ENTERPRISE ACTIVE en el sistema\n- Sin deuda vencida (`hasOverdueDebt=false`)\n- Los créditos empresariales permiten múltiples créditos activos simultáneos\n\n### Pasos\n1. Enviar POST /api/credits con tipo BUSINESS, monto 50,000, tasa 10.50%, plazo 36 meses\n2. Validar 201 Created con status=APPROVED, purpose=\"Capital de trabajo para expansión\"\n3. Verificar cronograma de 36 cuotas generadas (sistema francés)\n4. Verificar que se pueden crear múltiples créditos BUSINESS para el mismo cliente\n\n### Respuesta Esperada\n- **HTTP Status:** 201 Created\n- **Body:** CreditResponseDto con type=BUSINESS, status=APPROVED, schedule con 36 cuotas\n\n### Postcondiciones\nCrédito empresarial activo con propósito registrado."
+					},
+					"response": [
+						{
+							"name": "201 Created - Crédito empresarial aprobado",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"customerId\": \"cust-ent-001\",\n    \"type\": \"BUSINESS\",\n    \"amount\": 50000.00,\n    \"interestRate\": 10.50,\n    \"termMonths\": 36,\n    \"purpose\": \"Capital de trabajo para expansión\"\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/credits",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits"]
+								}
+							},
+							"status": "Created",
+							"code": 201,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"cred-ent-001\",\n    \"customerId\": \"cust-ent-001\",\n    \"type\": \"BUSINESS\",\n    \"status\": \"APPROVED\",\n    \"principalAmount\": 50000.00,\n    \"interestRate\": 10.50,\n    \"termMonths\": 36,\n    \"outstandingBalance\": 50000.00,\n    \"nextDueDate\": \"2026-12-15\",\n    \"firstDueDate\": \"2026-12-15\",\n    \"maturityDate\": \"2029-11-15\",\n    \"paymentFrequency\": \"MONTHLY\",\n    \"purpose\": \"Capital de trabajo para expansión\",\n    \"schedule\": [\n        {\n            \"installmentNumber\": 1,\n            \"dueDate\": \"2026-12-15\",\n            \"capitalAmount\": 1018.45,\n            \"interestAmount\": 437.50,\n            \"feeAmount\": 0.00,\n            \"totalAmount\": 1455.95,\n            \"status\": \"PENDING\"\n        }\n    ],\n    \"approvedAt\": \"2026-11-14T22:03:00\",\n    \"createdAt\": \"2026-11-14T22:03:00\",\n    \"updatedAt\": \"2026-11-14T22:03:00\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "CP-083: Consulta de crédito con cronograma (Redis Cache)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}"]
+						},
+						"description": "**Caso de Prueba:** CP-083\n**CU:** CU-03 | **SEC:** SEC029_consulta_credito_cronograma.md\n**Tipo:** Happy Path\n\n### Precondiciones\n- El crédito `{{creditId}}` existe en MongoDB\n- Ejecutar CP-075 primero para crear un crédito\n\n### Pasos\n1. Enviar GET /api/credits/{creditId}\n2. Primera consulta: MISS de caché Redis → lee de MongoDB → almacena en Redis\n3. Segunda consulta: HIT de caché Redis → respuesta rápida\n4. Validar 200 OK con todos los campos del crédito y el cronograma completo\n\n### Respuesta Esperada\n- **HTTP Status:** 200 OK\n- **Body:** CreditResponseDto completo con schedule\n\n### Errores Posibles\n- **404 Not Found:** Crédito no encontrado"
+					},
+					"response": [
+						{
+							"name": "200 OK - Crédito encontrado con cronograma",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123"]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"cred-abc123\",\n    \"customerId\": \"cust-12345\",\n    \"type\": \"PERSONAL\",\n    \"status\": \"APPROVED\",\n    \"principalAmount\": 10000.00,\n    \"interestRate\": 12.50,\n    \"termMonths\": 12,\n    \"outstandingBalance\": 10000.00,\n    \"nextDueDate\": \"2026-12-15\",\n    \"firstDueDate\": \"2026-12-15\",\n    \"maturityDate\": \"2027-11-15\",\n    \"paymentFrequency\": \"MONTHLY\",\n    \"purpose\": null,\n    \"schedule\": [\n        {\n            \"installmentNumber\": 1,\n            \"dueDate\": \"2026-12-15\",\n            \"capitalAmount\": 750.58,\n            \"interestAmount\": 104.17,\n            \"feeAmount\": 0.00,\n            \"totalAmount\": 854.75,\n            \"status\": \"PENDING\"\n        },\n        {\n            \"installmentNumber\": 2,\n            \"dueDate\": \"2027-01-15\",\n            \"capitalAmount\": 757.63,\n            \"interestAmount\": 97.12,\n            \"feeAmount\": 0.00,\n            \"totalAmount\": 854.75,\n            \"status\": \"PENDING\"\n        }\n    ],\n    \"approvedAt\": \"2026-11-14T22:00:00\",\n    \"createdAt\": \"2026-11-14T22:00:00\",\n    \"updatedAt\": \"2026-11-14T22:00:00\"\n}",
+							"delay": 0
+						},
+						{
+							"name": "404 Not Found - Crédito no encontrado",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-no-existe",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-no-existe"]
+								}
+							},
+							"status": "Not Found",
+							"code": 404,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"error\": \"CREDIT_NOT_FOUND\",\n    \"message\": \"Crédito no encontrado: cred-no-existe\",\n    \"timestamp\": \"2026-11-14T22:05:00\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "CP-084: Consulta de cronograma de pagos específico",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}/schedule",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}", "schedule"]
+						},
+						"description": "**Caso de Prueba:** CP-084\n**CU:** CU-03 | **SEC:** SEC029_consulta_credito_cronograma.md\n**Tipo:** Happy Path\n\n### Precondiciones\n- El crédito `{{creditId}}` existe con cronograma generado\n- Ejecutar CP-075 primero para crear un crédito\n\n### Pasos\n1. Enviar GET /api/credits/{creditId}/schedule\n2. Validar 200 OK con array de cuotas\n3. Cada cuota incluye: installmentNumber, dueDate, capitalAmount, interestAmount, feeAmount, totalAmount, status\n4. Verificar que el cronograma usa sistema francés (cuotas fijas mensuales)\n\n### Respuesta Esperada\n- **HTTP Status:** 200 OK\n- **Body:** Array de ScheduleInstallmentResponseDto con todas las cuotas\n\n### Errores Posibles\n- **404 Not Found:** Crédito no encontrado"
+					},
+					"response": [
+						{
+							"name": "200 OK - Cronograma completo",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123/schedule",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123", "schedule"]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "[\n    {\n        \"installmentNumber\": 1,\n        \"dueDate\": \"2026-12-15\",\n        \"capitalAmount\": 750.58,\n        \"interestAmount\": 104.17,\n        \"feeAmount\": 0.00,\n        \"totalAmount\": 854.75,\n        \"status\": \"PENDING\"\n    },\n    {\n        \"installmentNumber\": 2,\n        \"dueDate\": \"2027-01-15\",\n        \"capitalAmount\": 757.63,\n        \"interestAmount\": 97.12,\n        \"feeAmount\": 0.00,\n        \"totalAmount\": 854.75,\n        \"status\": \"PENDING\"\n    },\n    {\n        \"installmentNumber\": 3,\n        \"dueDate\": \"2027-02-15\",\n        \"capitalAmount\": 764.73,\n        \"interestAmount\": 90.02,\n        \"feeAmount\": 0.00,\n        \"totalAmount\": 854.75,\n        \"status\": \"PENDING\"\n    }\n]",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "Listar créditos con filtros opcionales",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/credits?customerId={{customerId}}&type=PERSONAL&status=APPROVED",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits"],
+							"query": [
+								{
+									"key": "customerId",
+									"value": "{{customerId}}",
+									"description": "Filtrar por cliente"
+								},
+								{
+									"key": "type",
+									"value": "PERSONAL",
+									"description": "Filtrar por tipo: PERSONAL, BUSINESS, MORTGAGE"
+								},
+								{
+									"key": "status",
+									"value": "APPROVED",
+									"description": "Filtrar por estado: PENDING, APPROVED, ACTIVE, PAID_OFF, OVERDUE, CANCELLED"
+								}
+							]
+						},
+						"description": "**CU:** CU-03 | **SEC:** SEC029_consulta_credito_cronograma.md\n**Tipo:** Happy Path\n\n### Descripción\nDevuelve una lista de créditos filtrados por cliente, tipo y estado. Los filtros son combinables.\n\n### Query Parameters\n- **customerId** (opcional): Filtrar por cliente titular\n- **type** (opcional): PERSONAL, BUSINESS, MORTGAGE\n- **status** (opcional): PENDING, APPROVED, ACTIVE, PAID_OFF, OVERDUE, CANCELLED\n\n### Respuesta Esperada\n- **HTTP Status:** 200 OK\n- **Body:** Array de CreditResponseDto filtrados"
+					},
+					"response": [
+						{
+							"name": "200 OK - Lista de créditos filtrados",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/credits?customerId=cust-12345&type=PERSONAL&status=APPROVED",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits"],
+									"query": [
+										{
+											"key": "customerId",
+											"value": "cust-12345"
+										},
+										{
+											"key": "type",
+											"value": "PERSONAL"
+										},
+										{
+											"key": "status",
+											"value": "APPROVED"
+										}
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "[\n    {\n        \"id\": \"cred-abc123\",\n        \"customerId\": \"cust-12345\",\n        \"type\": \"PERSONAL\",\n        \"status\": \"APPROVED\",\n        \"principalAmount\": 10000.00,\n        \"interestRate\": 12.50,\n        \"termMonths\": 12,\n        \"outstandingBalance\": 10000.00,\n        \"nextDueDate\": \"2026-12-15\",\n        \"schedule\": [],\n        \"approvedAt\": \"2026-11-14T22:00:00\",\n        \"createdAt\": \"2026-11-14T22:00:00\",\n        \"updatedAt\": \"2026-11-14T22:00:00\"\n    }\n]",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "Actualizar tasa de interés del crédito (reestructuración)",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"interestRate\": 10.00\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}"]
+						},
+						"description": "**CU:** CU-03\n**Tipo:** Happy Path\n\n### Precondiciones\n- El crédito `{{creditId}}` existe en estado APPROVED o ACTIVE\n\n### Pasos\n1. Enviar PUT /api/credits/{creditId} con nueva tasa de interés\n2. Validar 200 OK con crédito actualizado y cronograma regenerado\n3. Verificar que la caché Redis se invalida y se actualiza\n\n### Reglas de Negocio\n- Solo se puede actualizar un crédito en estado APPROVED o ACTIVE\n- La nueva tasa debe estar entre 0.01% y 50%\n- El cronograma se regenera automáticamente con el sistema francés\n\n### Respuesta Esperada\n- **HTTP Status:** 200 OK\n- **Body:** CreditResponseDto con interestRate=10.00 y nuevo schedule\n\n### Errores Posibles\n- **400 Bad Request:** Tasa fuera de rango\n- **404 Not Found:** Crédito no encontrado\n- **409 Conflict:** Crédito pagado, cancelado o en mora"
+					},
+					"response": [
+						{
+							"name": "200 OK - Crédito actualizado",
+							"originalRequest": {
+								"method": "PUT",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"interestRate\": 10.00\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123"]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"cred-abc123\",\n    \"customerId\": \"cust-12345\",\n    \"type\": \"PERSONAL\",\n    \"status\": \"APPROVED\",\n    \"principalAmount\": 10000.00,\n    \"interestRate\": 10.00,\n    \"termMonths\": 12,\n    \"outstandingBalance\": 10000.00,\n    \"nextDueDate\": \"2026-12-15\",\n    \"schedule\": [\n        {\n            \"installmentNumber\": 1,\n            \"dueDate\": \"2026-12-15\",\n            \"capitalAmount\": 775.20,\n            \"interestAmount\": 83.33,\n            \"feeAmount\": 0.00,\n            \"totalAmount\": 858.53,\n            \"status\": \"PENDING\"\n        }\n    ],\n    \"approvedAt\": \"2026-11-14T22:00:00\",\n    \"createdAt\": \"2026-11-14T22:00:00\",\n    \"updatedAt\": \"2026-11-14T22:10:00\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "Cancelar crédito",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}"]
+						},
+						"description": "**CU:** CU-03\n**Tipo:** Happy Path\n\n### Precondiciones\n- El crédito `{{creditId}}` existe en estado APPROVED o ACTIVE\n\n### Pasos\n1. Enviar DELETE /api/credits/{creditId}\n2. Validar 200 OK con status=CANCELLED\n3. Verificar que la caché Redis se invalida\n\n### Reglas de Negocio\n- Solo se puede cancelar un crédito en estado APPROVED o ACTIVE\n- No se puede cancelar un crédito ya pagado (PAID_OFF)\n- No se puede cancelar un crédito en mora (OVERDUE) sin regularizar primero\n\n### Respuesta Esperada\n- **HTTP Status:** 200 OK\n- **Body:** CreditResponseDto con status=CANCELLED\n\n### Errores Posibles\n- **404 Not Found:** Crédito no encontrado\n- **409 Conflict:** Crédito pagado, ya cancelado o en mora"
+					},
+					"response": [
+						{
+							"name": "200 OK - Crédito cancelado",
+							"originalRequest": {
+								"method": "DELETE",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123"]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"cred-abc123\",\n    \"customerId\": \"cust-12345\",\n    \"type\": \"PERSONAL\",\n    \"status\": \"CANCELLED\",\n    \"principalAmount\": 10000.00,\n    \"interestRate\": 12.50,\n    \"termMonths\": 12,\n    \"outstandingBalance\": 10000.00,\n    \"schedule\": [],\n    \"approvedAt\": \"2026-11-14T22:00:00\",\n    \"createdAt\": \"2026-11-14T22:00:00\",\n    \"updatedAt\": \"2026-11-14T22:15:00\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "CP-082: Job de detección de mora (>30 días)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/jobs/overdue-detection",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "jobs", "overdue-detection"]
+						},
+						"description": "**Caso de Prueba:** CP-082\n**CU:** CU-03 | **SEC:** SEC028_job_mora_bloqueo_transversal.md\n**Tipo:** Happy Path (Job Scheduler)\n\n### Precondiciones\n- Existen créditos con cuotas vencidas >30 días en el sistema\n- El job se ejecuta automáticamente a las 02:00 AM (UTC-5)\n- Este endpoint permite ejecutarlo manualmente para pruebas\n\n### Pasos\n1. Enviar POST /api/credits/jobs/overdue-detection\n2. Verificar que los créditos con mora >30 días cambian a status=OVERDUE\n3. Verificar evento `yanki.credit.overdue.v1` publicado en Kafka por cada crédito en mora\n4. Verificar que accounts/cards/wallet services consumen el evento y actualizan `customer_risk_view.hasOverdueDebt=true`\n5. Verificar efecto bloqueo: nuevas aperturas de cuenta/tarjeta/wallet → RECHAZADAS\n\n### Respuesta Esperada\n- **HTTP Status:** 200 OK\n- **Body:** Mensaje de confirmación del job\n\n### Postcondiciones\nBloqueo transversal activado para clientes con mora."
+					},
+					"response": [
+						{
+							"name": "200 OK - Job ejecutado",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/jobs/overdue-detection",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "jobs", "overdue-detection"]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "text",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "text/plain"
+								}
+							],
+							"cookie": [],
+							"body": "Job de deteccion de mora ejecutado",
+							"delay": 0
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "CU-06: Pagos de Créditos",
+			"description": "Registro, consulta, corrección y reversa de pagos de créditos.\n\n**Referencia:** `../test-cases/README.md` — CP-079 a CP-081\n**Diagramas:** SEC027",
+			"item": [
+				{
+					"name": "CP-079: Pago de crédito exitoso desde cuenta propia (event-driven)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"amount\": 854.75,\n    \"source\": \"OWN_ACCOUNT\",\n    \"sourceAccountId\": \"acc-67890\",\n    \"description\": \"Pago mensual cuota 1\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}/payments",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}", "payments"]
+						},
+						"description": "**Caso de Prueba:** CP-079\n**CU:** CU-06 | **SEC:** SEC027_pago_credito.md\n**Tipo:** Happy Path\n\n### Precondiciones\n- Crédito `{{creditId}}` en estado ACTIVE con cuota pendiente\n- Cuenta origen `acc-67890` con fondos suficientes\n- Sin deuda vencida del cliente\n\n### Pasos\n1. Enviar POST /api/credits/{creditId}/payments con amount=854.75, source=OWN_ACCOUNT\n2. Validar 201 Created con paymentId, newBalance, nextDueDate\n3. Verificar evento `yanki.debit.payment.requested.v1` publicado → accounts-service liquida → `debit.payment.settled.v1`\n4. Verificar evento `yanki.credit.payment.registered.v1` con desglose capital/interés/mora\n5. Verificar que el pago se aplica con orden de prioridad: 1) Mora, 2) Interés vencido, 3) Capital vencido, 4) Interés corriente, 5) Capital corriente\n\n### Respuesta Esperada\n- **HTTP Status:** 201 Created\n- **Body:** PaymentResponseDto con id, amount, capitalPortion, interestPortion, feePortion\n\n### Postcondiciones\nCuota aplicada, saldo pendiente reducido."
+					},
+					"response": [
+						{
+							"name": "201 Created - Pago registrado exitosamente",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"amount\": 854.75,\n    \"source\": \"OWN_ACCOUNT\",\n    \"sourceAccountId\": \"acc-67890\",\n    \"description\": \"Pago mensual cuota 1\"\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123/payments",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123", "payments"]
+								}
+							},
+							"status": "Created",
+							"code": 201,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								},
+								{
+									"key": "Location",
+									"value": "/api/credits/cred-abc123/payments/pay-xyz789"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"pay-xyz789\",\n    \"creditId\": \"cred-abc123\",\n    \"customerId\": \"cust-12345\",\n    \"amount\": 854.75,\n    \"capitalPortion\": 750.58,\n    \"interestPortion\": 104.17,\n    \"feePortion\": 0.00,\n    \"installmentNumber\": 1,\n    \"dueDate\": \"2026-12-15\",\n    \"paidAt\": \"2026-11-14T22:20:00\",\n    \"source\": \"OWN_ACCOUNT\",\n    \"sourceAccountId\": \"acc-67890\",\n    \"status\": \"COMPLETED\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+     "name": "CP-080: Pago registrado — validación de fondos es asíncrona vía Kafka",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"amount\": 999999.00,\n    \"source\": \"OWN_ACCOUNT\",\n    \"sourceAccountId\": \"acc-sin-fondos\",\n    \"description\": \"Intento de pago con fondos insuficientes\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}/payments",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}", "payments"]
+						},
+						"description": "**Caso de Prueba:** CP-080\n**CU:** CU-06 | **SEC:** SEC027_pago_credito.md\n**Tipo:** Flujo Event-Driven (validación asíncrona)\n\n### Precondiciones\n- Cuenta origen `acc-sin-fondos` con saldo insuficiente para el monto solicitado\n- Crédito `{{creditId}}` en estado ACTIVE\n\n### Pasos\n1. Enviar POST /api/credits/{creditId}/payments con monto mayor al saldo de la cuenta\n2. El credits-service acepta el pago y responde 201 Created\n3. El credits-service publica el evento `yanki.credit.payment.registered.v1` en Kafka\n4. El accounts-service valida los fondos de forma asíncrona y, si son insuficientes, publica `yanki.debit.payment.settled.v1` con status=REJECTED\n5. El credits-service consume el evento de rechazo y revierte el pago\n\n### Respuesta Esperada\n- **HTTP Status:** 201 Created (el pago se registra de forma optimista)\n- **Body:** PaymentResponseDto con status=COMPLETED\n\n### Nota Importante\nEl credits-service NO valida fondos de forma síncrona. La validación de fondos es responsabilidad de accounts-service y se realiza de forma asíncrona vía Kafka. No existe el código de error `INSUFFICIENT_FUNDS` en el credits-service."
+					},
+					"response": [
+						{
+							"name": "201 Created - Pago registrado (validación de fondos es asíncrona)",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"amount\": 999999.00,\n    \"source\": \"OWN_ACCOUNT\",\n    \"sourceAccountId\": \"acc-sin-fondos\",\n    \"description\": \"Intento de pago con fondos insuficientes\"\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123/payments",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123", "payments"]
+								}
+							},
+							"status": "Created",
+							"code": 201,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"pay-xyz789\",\n    \"creditId\": \"cred-abc123\",\n    \"customerId\": \"cust-12345\",\n    \"amount\": 999999.00,\n    \"capitalPortion\": 999999.00,\n    \"interestPortion\": 0.00,\n    \"feePortion\": 0.00,\n    \"installmentNumber\": 1,\n    \"dueDate\": \"2026-12-15\",\n    \"paidAt\": \"2026-11-14T22:21:00\",\n    \"source\": \"OWN_ACCOUNT\",\n    \"sourceAccountId\": \"acc-sin-fondos\",\n    \"status\": \"COMPLETED\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "CP-081: Pago de crédito efectivo/terceros (sin débito cuenta)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"amount\": 500.00,\n    \"source\": \"THIRD_PARTY\",\n    \"payerCustomerId\": \"cust-tercero-001\",\n    \"description\": \"Pago realizado por tercero\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}/payments",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}", "payments"]
+						},
+						"description": "**Caso de Prueba:** CP-081\n**CU:** CU-06 | **SEC:** SEC027_pago_credito.md\n**Tipo:** Happy Path\n\n### Precondiciones\n- Crédito `{{creditId}}` en estado ACTIVE\n- El pago es realizado por un tercero (no desde cuenta propia del titular)\n\n### Pasos\n1. Enviar POST /api/credits/{creditId}/payments con source=THIRD_PARTY\n2. Validar 201 Created sin evento `debit.payment.requested.v1` (no se debita cuenta)\n3. Verificar evento `yanki.credit.payment.registered.v1` publicado\n\n### Respuesta Esperada\n- **HTTP Status:** 201 Created\n- **Body:** PaymentResponseDto con source=THIRD_PARTY\n\n### Postcondiciones\nPago registrado sin débito de cuenta bancaria."
+					},
+					"response": [
+						{
+							"name": "201 Created - Pago de tercero registrado",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"amount\": 500.00,\n    \"source\": \"THIRD_PARTY\",\n    \"payerCustomerId\": \"cust-tercero-001\",\n    \"description\": \"Pago realizado por tercero\"\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123/payments",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123", "payments"]
+								}
+							},
+							"status": "Created",
+							"code": 201,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"pay-tercero-001\",\n    \"creditId\": \"cred-abc123\",\n    \"customerId\": \"cust-12345\",\n    \"amount\": 500.00,\n    \"capitalPortion\": 437.50,\n    \"interestPortion\": 62.50,\n    \"feePortion\": 0.00,\n    \"installmentNumber\": 1,\n    \"dueDate\": \"2026-12-15\",\n    \"paidAt\": \"2026-11-14T22:25:00\",\n    \"source\": \"THIRD_PARTY\",\n    \"sourceAccountId\": null,\n    \"status\": \"COMPLETED\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "Listar pagos de un crédito",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}/payments",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}", "payments"]
+						},
+						"description": "**CU:** CU-06 | **SEC:** SEC027_pago_credito.md\n**Tipo:** Happy Path\n\n### Descripción\nDevuelve la lista histórica de todos los pagos registrados en un crédito.\n\n### Precondiciones\n- El crédito `{{creditId}}` existe con pagos registrados\n- Ejecutar CP-079 primero para registrar un pago\n\n### Respuesta Esperada\n- **HTTP Status:** 200 OK\n- **Body:** Array de PaymentResponseDto"
+					},
+					"response": [
+						{
+							"name": "200 OK - Historial de pagos",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123/payments",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123", "payments"]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "[\n    {\n        \"id\": \"pay-xyz789\",\n        \"creditId\": \"cred-abc123\",\n        \"customerId\": \"cust-12345\",\n        \"amount\": 854.75,\n        \"capitalPortion\": 750.58,\n        \"interestPortion\": 104.17,\n        \"feePortion\": 0.00,\n        \"installmentNumber\": 1,\n        \"dueDate\": \"2026-12-15\",\n        \"paidAt\": \"2026-11-14T22:20:00\",\n        \"source\": \"OWN_ACCOUNT\",\n        \"sourceAccountId\": \"acc-67890\",\n        \"status\": \"COMPLETED\"\n    },\n    {\n        \"id\": \"pay-tercero-001\",\n        \"creditId\": \"cred-abc123\",\n        \"customerId\": \"cust-12345\",\n        \"amount\": 500.00,\n        \"capitalPortion\": 437.50,\n        \"interestPortion\": 62.50,\n        \"feePortion\": 0.00,\n        \"installmentNumber\": 1,\n        \"dueDate\": \"2026-12-15\",\n        \"paidAt\": \"2026-11-14T22:25:00\",\n        \"source\": \"THIRD_PARTY\",\n        \"sourceAccountId\": null,\n        \"status\": \"COMPLETED\"\n    }\n]",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "Consultar pago específico por ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}/payments/{{paymentId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}", "payments", "{{paymentId}}"]
+						},
+						"description": "**CU:** CU-06 | **SEC:** SEC027_pago_credito.md\n**Tipo:** Happy Path\n\n### Descripción\nDevuelve los detalles completos de un pago registrado, incluyendo la distribución del monto.\n\n### Precondiciones\n- El pago `{{paymentId}}` existe en el crédito `{{creditId}}`\n- Ejecutar CP-079 primero para registrar un pago\n\n### Respuesta Esperada\n- **HTTP Status:** 200 OK\n- **Body:** PaymentResponseDto completo\n\n### Errores Posibles\n- **404 Not Found:** Pago o crédito no encontrado"
+					},
+					"response": [
+						{
+							"name": "200 OK - Detalle del pago",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123/payments/pay-xyz789",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123", "payments", "pay-xyz789"]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"pay-xyz789\",\n    \"creditId\": \"cred-abc123\",\n    \"customerId\": \"cust-12345\",\n    \"amount\": 854.75,\n    \"capitalPortion\": 750.58,\n    \"interestPortion\": 104.17,\n    \"feePortion\": 0.00,\n    \"installmentNumber\": 1,\n    \"dueDate\": \"2026-12-15\",\n    \"paidAt\": \"2026-11-14T22:20:00\",\n    \"source\": \"OWN_ACCOUNT\",\n    \"sourceAccountId\": \"acc-67890\",\n    \"status\": \"COMPLETED\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "Corregir monto de un pago registrado",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"amount\": 1500.00\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}/payments/{{paymentId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}", "payments", "{{paymentId}}"]
+						},
+						"description": "**CU:** CU-06\n**Tipo:** Happy Path\n\n### Precondiciones\n- El pago `{{paymentId}}` existe en el crédito `{{creditId}}`\n- El crédito está en estado APPROVED o ACTIVE\n\n### Pasos\n1. Enviar PUT /api/credits/{creditId}/payments/{paymentId} con nuevo monto\n2. Validar 200 OK con pago corregido\n3. Verificar que el saldo pendiente se ajusta automáticamente\n4. Verificar que la caché Redis se invalida\n\n### Reglas de Negocio\n- Solo se puede corregir un pago de un crédito en estado APPROVED o ACTIVE\n- No se puede corregir un pago de un crédito cancelado o pagado totalmente\n- No se puede corregir un pago ya revertido\n- El nuevo monto debe ser mayor a cero\n\n### Respuesta Esperada\n- **HTTP Status:** 200 OK\n- **Body:** PaymentResponseDto con amount=1500.00\n\n### Errores Posibles\n- **400 Bad Request:** Monto inválido\n- **404 Not Found:** Crédito o pago no encontrado\n- **409 Conflict:** Crédito cancelado, pagado o pago revertido"
+					},
+					"response": [
+						{
+							"name": "200 OK - Pago corregido",
+							"originalRequest": {
+								"method": "PUT",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"amount\": 1500.00\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123/payments/pay-xyz789",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123", "payments", "pay-xyz789"]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"pay-xyz789\",\n    \"creditId\": \"cred-abc123\",\n    \"customerId\": \"cust-12345\",\n    \"amount\": 1500.00,\n    \"capitalPortion\": 1300.00,\n    \"interestPortion\": 200.00,\n    \"feePortion\": 0.00,\n    \"installmentNumber\": 1,\n    \"dueDate\": \"2026-12-15\",\n    \"paidAt\": \"2026-11-14T22:20:00\",\n    \"source\": \"OWN_ACCOUNT\",\n    \"sourceAccountId\": \"acc-67890\",\n    \"status\": \"COMPLETED\"\n}",
+							"delay": 0
+						}
+					]
+				},
+				{
+					"name": "Revertir un pago registrado",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/credits/{{creditId}}/payments/{{paymentId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "credits", "{{creditId}}", "payments", "{{paymentId}}"]
+						},
+						"description": "**CU:** CU-06\n**Tipo:** Happy Path\n\n### Precondiciones\n- El pago `{{paymentId}}` existe en el crédito `{{creditId}}`\n- El crédito está en estado APPROVED, ACTIVE o PAID_OFF\n\n### Pasos\n1. Enviar DELETE /api/credits/{creditId}/payments/{paymentId}\n2. Validar 200 OK con status=REVERSED\n3. Verificar que el monto se devuelve al saldo pendiente del crédito\n4. Si el crédito estaba PAID_OFF, vuelve a ACTIVE\n5. Verificar que la caché Redis se invalida\n\n### Reglas de Negocio\n- Solo se puede revertir un pago de un crédito en estado APPROVED, ACTIVE o PAID_OFF\n- Si el crédito estaba pagado (PAID_OFF), vuelve a estado ACTIVE\n- No se puede revertir un pago ya revertido\n\n### Respuesta Esperada\n- **HTTP Status:** 200 OK\n- **Body:** PaymentResponseDto con status=REVERSED\n\n### Errores Posibles\n- **404 Not Found:** Crédito o pago no encontrado\n- **409 Conflict:** Crédito cancelado o pago ya revertido"
+					},
+					"response": [
+						{
+							"name": "200 OK - Pago revertido",
+							"originalRequest": {
+								"method": "DELETE",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/credits/cred-abc123/payments/pay-xyz789",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "credits", "cred-abc123", "payments", "pay-xyz789"]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"pay-xyz789\",\n    \"creditId\": \"cred-abc123\",\n    \"customerId\": \"cust-12345\",\n    \"amount\": 854.75,\n    \"capitalPortion\": 750.58,\n    \"interestPortion\": 104.17,\n    \"feePortion\": 0.00,\n    \"installmentNumber\": 1,\n    \"dueDate\": \"2026-12-15\",\n    \"paidAt\": \"2026-11-14T22:20:00\",\n    \"source\": \"OWN_ACCOUNT\",\n    \"sourceAccountId\": \"acc-67890\",\n    \"status\": \"REVERSED\"\n}",
+							"delay": 0
+						}
+					]
+				}
+			]
+		}
+	]
+}

@@ -220,15 +220,15 @@ El servicio está **100% terminado**. La única observación no bloqueante es ag
 
 | Archivo | Sección | Descripción |
 |---------|---------|-------------|
-| `CASOS_USO/CU-03-Gestion-Creditos.md` | Caso de Uso principal | Gestión de créditos personales y empresariales |
-| `CASOS_USO/CU-06-Pagos-Creditos.md` | Caso de Uso secundario | Pagos de créditos |
+| `../docs/CASOS_USO` | Caso de Uso principal | Gestión de créditos personales y empresariales |
+| `../docs/CASOS_USO` | Caso de Uso secundario | Pagos de créditos |
 | `DIAGRAMAS_SECUENCIAS/SEC025_apertura_credito_personal.md` | Diagrama | Apertura crédito personal |
 | `DIAGRAMAS_SECUENCIAS/SEC026_apertura_credito_empresarial.md` | Diagrama | Apertura crédito empresarial |
 | `DIAGRAMAS_SECUENCIAS/SEC027_pago_credito.md` | Diagrama | Pago de crédito |
 | `DIAGRAMAS_SECUENCIAS/SEC028_job_mora_bloqueo_transversal.md` | Diagrama | Job de mora |
 | `DIAGRAMAS_SECUENCIAS/SEC029_consulta_credito_cronograma.md` | Diagrama | Consulta crédito y cronograma |
-| `CASOS_PRUEBA/CASOS_PRUEBA_QA.md` | CP-075 a CP-084 | 10 casos de prueba del servicio |
-| `CASOS_PRUEBA/RTM.md` | Fila CU-03, CU-06 | Matriz de trazabilidad |
+| `../docs/CASOS_PRUEBA` | CP-075 a CP-084 | 10 casos de prueba del servicio |
+| `../docs/CASOS_PRUEBA` | Fila CU-03, CU-06 | Matriz de trazabilidad |
 | `Proyecto General vf.md` | Parte I, II, III | Requisitos base del proyecto |
 | `system-prompt-auditoria-hexagonal-yanki.md` | System prompt | Reglas de arquitectura hexagonal |
 | `AGENTS.md` | Regla de Oro | Trazabilidad y arquitectura hexagonal |

@@ -138,13 +138,13 @@
 
 | Archivo | Sección | Descripción |
 |---------|---------|-------------|
-| `../../CASOS_USO/CU-03-*.md` | Caso de Uso completo | Gestión de Créditos (Personal, Empresarial, Hipotecario) |
-| `../../CASOS_USO/CU-06-*.md` | Caso de Uso completo | Pagos de Créditos (propia/terceros, event-driven) |
+| `../../docs/CASOS_USO` | Caso de Uso completo | Gestión de Créditos (Personal, Empresarial, Hipotecario) |
+| `../../docs/CASOS_USO` | Caso de Uso completo | Pagos de Créditos (propia/terceros, event-driven) |
 | `../../DIAGRAMAS_SECUENCIAS/SEC025_apertura_credito_personal.md` | Diagrama completo | Apertura crédito personal con scoring y cronograma |
 | `../../DIAGRAMAS_SECUENCIAS/SEC026_apertura_credito_empresarial.md` | Diagrama completo | Apertura crédito empresarial con múltiples permitidos |
 | `../../DIAGRAMAS_SECUENCIAS/SEC027_pago_credito.md` | Diagrama completo | Pago crédito propia/terceros, aplicación priorizada |
 | `../../DIAGRAMAS_SECUENCIAS/SEC028_job_mora_bloqueo_transversal.md` | Diagrama completo | Job mora >30d, publicación overdue, bloqueo transversal |
 | `../../DIAGRAMAS_SECUENCIAS/SEC029_consulta_credito_cronograma.md` | Diagrama completo | Consulta crédito + cronograma con Redis Cache |
-| `../../CASOS_PRUEBA/CASOS_PRUEBA_QA.md` | CP-075 a CP-084 | Casos de prueba fuente |
-| `../../CASOS_PRUEBA/RTM.md` | Fila CU-03, CU-06 | Matriz de trazabilidad completa |
-| `../../CASOS_PRUEBA/TRACEABILIDAD_POR_SERVICIO.md` | Sección 3 (credits-service) | Trazabilidad por microservicio |
+| `../../docs/CASOS_PRUEBA` | CP-075 a CP-084 | Casos de prueba fuente |
+| `../../docs/CASOS_PRUEBA` | Fila CU-03, CU-06 | Matriz de trazabilidad completa |
+| `../../docs/CASOS_PRUEBA` | Sección 3 (credits-service) | Trazabilidad por microservicio |

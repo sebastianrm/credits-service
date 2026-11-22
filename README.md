@@ -26,9 +26,9 @@ Gestiona productos de crédito, como personal, empresarial e hipotecario. Ofrece
 
 Este documento consolida la información necesaria desde:
 - `README.md` de la raíz del monorepo.
-- `CASOS_USO/CU-03-Gestion-Creditos.md`.
-- `CASOS_USO/CU-06-Pagos-Creditos.md`.
-- `CASOS_PRUEBA/CASOS_PRUEBA_QA.md`.
+- `../docs/CASOS_USO`.
+- `../docs/CASOS_USO`.
+- `../docs/CASOS_PRUEBA`.
 - `docs/EVENTOS.md`.
 - Convenciones técnicas del repositorio (`CONVENTIONS.md`).
 

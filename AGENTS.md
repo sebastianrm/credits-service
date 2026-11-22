@@ -20,10 +20,10 @@ Debe poder trabajar de manera **autónoma**, tomando como insumos consolidados:
 - `credits-service/README.md`
 - `credits-service/AGENTS.md` (este archivo)
 - `README.md` de la raíz del monorepo
-- `CASOS_USO/CU-03-Gestion-Creditos.md`
-- `CASOS_USO/CU-06-Pagos-Creditos.md`
-- `CASOS_PRUEBA/CASOS_PRUEBA_QA.md` (CP-075 a CP-084)
-- `CASOS_PRUEBA/TRACEABILIDAD_POR_SERVICIO.md` (Sección 3)
+- `../docs/CASOS_USO`
+- `../docs/CASOS_USO`
+- `../docs/CASOS_PRUEBA` (CP-075 a CP-084)
+- `../docs/CASOS_PRUEBA` (Sección 3)
 - `docs/EVENTOS.md`
 - `CONVENTIONS.md`
 - `system-prompt-auditoria-hexagonal-yanki.md` (obligatorio para auditoría de código)
@@ -35,8 +35,8 @@ Si existe conflicto entre documentos, debe priorizar:
 4. `docs/EVENTOS.md`
 5. `README.md` raíz
 6. `credits-service/README.md`
-7. `CASOS_USO/*`
-8. `CASOS_PRUEBA/*`
+7. `../docs/CASOS_USO`
+8. `../docs/CASOS_PRUEBA`
 
 ### Alcance funcional que debe dominar
 

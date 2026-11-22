@@ -1,0 +1,947 @@
+openapi: 3.0.3
+info:
+  title: Yanki Credits Service API
+  description: |
+    API REST de gestión de créditos personales y empresariales de la plataforma bancaria Yanki.
+    
+    Gestiona el ciclo de vida completo de los créditos: creación con scoring, consulta con caché Redis,
+    registro de pagos con distribución automática, cronogramas de pagos (sistema francés),
+    corrección y reversión de pagos, y detección de mora.
+    
+    **Características principales:**
+    - Creación de créditos PERSONAL, BUSINESS y MORTGAGE con scoring automático
+    - Cronograma de pagos con sistema francés (cuotas fijas)
+    - Registro de pagos con distribución por prioridad (mora → interés → capital)
+    - Corrección y reversión de pagos
+    - Detección automática de mora con job diario
+    - Caché Redis para consultas frecuentes de cronogramas
+    - Eventos Kafka para integración con otros servicios
+  version: 1.0.0
+  contact:
+    name: Sebastian Retamal Morales
+    email: retamal.sebastian@gmail.com
+  license:
+    name: Proprietary
+    url: https://yanki.com/license
+
+servers:
+  - url: http://localhost:8084
+    description: Entorno local de desarrollo
+  - url: https://api-gateway.yanki.com/api/credits
+    description: Entorno de producción (vía API Gateway)
+
+tags:
+  - name: Credits
+    description: API de gestión de créditos personales y empresariales
+
+paths:
+  /api/credits:
+    post:
+      tags:
+        - Credits
+      summary: Crear un nuevo crédito
+      description: |
+        Crea un nuevo crédito personal o empresarial validando las reglas de negocio.
+        
+        **Reglas de negocio:**
+        - Verifica que el cliente existe y está activo
+        - Verifica que el cliente no tiene deuda vencida mayor a 30 días
+        - Para créditos PERSONAL: máximo 1 crédito activo por cliente
+        - Ejecuta scoring básico de montos, tasas y plazos
+        - Genera automáticamente el cronograma con sistema francés
+        - Publica el evento credit.opened.v1 en Kafka
+      operationId: createCredit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCreditRequestDto'
+            example:
+              customerId: "cust-12345"
+              type: "PERSONAL"
+              amount: 10000.00
+              termMonths: 12
+              interestRate: 12.50
+      responses:
+        '201':
+          description: Crédito creado exitosamente con cronograma generado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditResponseDto'
+        '400':
+          description: Solicitud inválida: monto, tasa o plazo fuera de rango
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '403':
+          description: Cliente con deuda vencida mayor a 30 días
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '404':
+          description: Cliente no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '409':
+          description: Crédito personal ya activo o crédito ya pagado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+    get:
+      tags:
+        - Credits
+      summary: Listar créditos con filtros opcionales
+      description: Devuelve una lista de créditos filtrados por cliente, tipo y estado. Los filtros son combinables
+      operationId: listCredits
+      parameters:
+        - name: customerId
+          in: query
+          required: false
+          description: Filtrar por identificador del cliente titular
+          schema:
+            type: string
+            example: "cust-12345"
+        - name: type
+          in: query
+          required: false
+          description: Filtrar por tipo de crédito
+          schema:
+            type: string
+            enum: [PERSONAL, BUSINESS, MORTGAGE]
+            example: "PERSONAL"
+        - name: status
+          in: query
+          required: false
+          description: Filtrar por estado del crédito
+          schema:
+            type: string
+            enum: [PENDING, APPROVED, ACTIVE, PAID_OFF, OVERDUE, CANCELLED]
+            example: "ACTIVE"
+      responses:
+        '200':
+          description: Lista de créditos obtenida exitosamente
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CreditResponseDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+
+  /api/credits/{id}:
+    get:
+      tags:
+        - Credits
+      summary: Consultar un crédito por identificador
+      description: Devuelve los detalles completos de un crédito incluyendo el cronograma de pagos. Usa caché Redis
+      operationId: getCreditById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador único del crédito
+          schema:
+            type: string
+            example: "cred-abc123"
+      responses:
+        '200':
+          description: Crédito encontrado con todos sus detalles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditResponseDto'
+        '404':
+          description: Crédito no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+    put:
+      tags:
+        - Credits
+      summary: Actualizar la tasa de interés de un crédito
+      description: |
+        Actualiza la tasa de interés y regenera el cronograma de pagos. Solo para créditos APPROVED o ACTIVE.
+        La nueva tasa debe estar entre 0.01% y 50%
+      operationId: updateCredit
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador único del crédito
+          schema:
+            type: string
+            example: "cred-abc123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCreditRequestDto'
+      responses:
+        '200':
+          description: Crédito actualizado con nuevo cronograma
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditResponseDto'
+        '400':
+          description: Tasa de interés inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '404':
+          description: Crédito no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '409':
+          description: No se puede actualizar un crédito pagado, cancelado o en mora
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+    delete:
+      tags:
+        - Credits
+      summary: Cancelar un crédito
+      description: |
+        Cancela un crédito cambiando su estado a CANCELLED. Solo para créditos APPROVED o ACTIVE.
+        No se puede cancelar un crédito pagado o en mora sin regularizar
+      operationId: cancelCredit
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador único del crédito
+          schema:
+            type: string
+            example: "cred-abc123"
+      responses:
+        '200':
+          description: Crédito cancelado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditResponseDto'
+        '404':
+          description: Crédito no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '409':
+          description: No se puede cancelar un crédito pagado, cancelado o en mora
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+
+  /api/credits/{id}/schedule:
+    get:
+      tags:
+        - Credits
+      summary: Consultar el cronograma de pagos de un crédito
+      description: |
+        Devuelve el cronograma completo de pagos con sistema francés (cuotas fijas).
+        Cada cuota incluye: número, fecha de vencimiento, capital, interés, comisiones y total
+      operationId: getSchedule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador único del crédito
+          schema:
+            type: string
+            example: "cred-abc123"
+      responses:
+        '200':
+          description: Cronograma de pagos obtenido exitosamente
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ScheduleInstallmentResponseDto'
+        '404':
+          description: Crédito no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+
+  /api/credits/{id}/payments:
+    post:
+      tags:
+        - Credits
+      summary: Registrar un pago en un crédito
+      description: |
+        Registra un pago aplicando el monto con orden de prioridad:
+        1) Mora y comisiones vencidas → 2) Interés vencido → 3) Capital vencido → 4) Interés corriente → 5) Capital corriente → 6) Pago anticipado
+        
+        Si el saldo llega a cero, el crédito cambia a PAID_OFF automáticamente
+      operationId: registerPayment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador único del crédito
+          schema:
+            type: string
+            example: "cred-abc123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequestDto'
+            example:
+              amount: 500.00
+              source: "OWN_ACCOUNT"
+              sourceAccountId: "acc-67890"
+              description: "Pago mensual de crédito"
+      responses:
+        '201':
+          description: Pago registrado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponseDto'
+        '400':
+          description: Monto de pago inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '404':
+          description: Crédito no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '409':
+          description: Intento de pagar un crédito ya pagado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+    get:
+      tags:
+        - Credits
+      summary: Listar los pagos de un crédito
+      description: Devuelve la lista histórica de todos los pagos registrados en un crédito
+      operationId: listPayments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador único del crédito
+          schema:
+            type: string
+            example: "cred-abc123"
+      responses:
+        '200':
+          description: Lista de pagos obtenida exitosamente
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PaymentResponseDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+
+  /api/credits/{id}/payments/{paymentId}:
+    get:
+      tags:
+        - Credits
+      summary: Consultar un pago específico por identificador
+      description: Devuelve los detalles completos de un pago incluyendo la distribución del monto
+      operationId: getPaymentById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador único del crédito
+          schema:
+            type: string
+            example: "cred-abc123"
+        - name: paymentId
+          in: path
+          required: true
+          description: Identificador único del pago
+          schema:
+            type: string
+            example: "pay-xyz789"
+      responses:
+        '200':
+          description: Pago encontrado con todos sus detalles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponseDto'
+        '404':
+          description: Pago o crédito no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+    put:
+      tags:
+        - Credits
+      summary: Corregir un pago registrado
+      description: |
+        Corrige el monto de un pago ya registrado. Ajusta automáticamente el saldo pendiente.
+        Solo para créditos APPROVED o ACTIVE. No se puede corregir un pago revertido
+      operationId: updatePayment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador único del crédito
+          schema:
+            type: string
+            example: "cred-abc123"
+        - name: paymentId
+          in: path
+          required: true
+          description: Identificador único del pago
+          schema:
+            type: string
+            example: "pay-xyz789"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePaymentRequestDto'
+      responses:
+        '200':
+          description: Pago corregido exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponseDto'
+        '400':
+          description: Monto corregido inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '404':
+          description: Crédito o pago no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '409':
+          description: No se puede corregir un pago de crédito cancelado, pagado o revertido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+    delete:
+      tags:
+        - Credits
+      summary: Revertir un pago registrado
+      description: |
+        Revierte un pago devolviendo el monto al saldo pendiente. El pago se marca como REVERSED.
+        Si el crédito estaba PAID_OFF, vuelve a ACTIVE
+      operationId: reversePayment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador único del crédito
+          schema:
+            type: string
+            example: "cred-abc123"
+        - name: paymentId
+          in: path
+          required: true
+          description: Identificador único del pago
+          schema:
+            type: string
+            example: "pay-xyz789"
+      responses:
+        '200':
+          description: Pago revertido exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponseDto'
+        '404':
+          description: Crédito o pago no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '409':
+          description: No se puede revertir un pago de crédito cancelado o ya revertido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+
+  /api/credits/jobs/overdue-detection:
+    post:
+      tags:
+        - Credits
+      summary: Ejecutar manualmente el job de detección de mora
+      description: |
+        Dispara manualmente el job que identifica créditos con cuotas vencidas mayor a 30 días,
+        cambia su estado a OVERDUE y publica el evento credit.overdue.v1 en Kafka
+      operationId: triggerOverdueDetection
+      responses:
+        '200':
+          description: Job de detección de mora ejecutado exitosamente
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Job de detección de mora ejecutado"
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDto'
+
+components:
+  schemas:
+    CreateCreditRequestDto:
+      type: object
+      required:
+        - customerId
+        - type
+        - amount
+        - termMonths
+        - interestRate
+      description: Solicitud para crear un nuevo crédito en el sistema Yanki
+      properties:
+        customerId:
+          type: string
+          description: Identificador único del cliente solicitante
+          example: "cust-12345"
+        type:
+          type: string
+          description: |
+            Tipo de crédito a solicitar.
+            - PERSONAL: crédito para personas naturales (máximo 1 activo)
+            - BUSINESS: crédito empresarial (requiere purpose)
+            - MORTGAGE: crédito hipotecario (requiere collateralDescription)
+          enum: [PERSONAL, BUSINESS, MORTGAGE]
+          example: "PERSONAL"
+        amount:
+          type: number
+          format: decimal
+          description: Monto principal solicitado en moneda local (USD). Mínimo: 0.01
+          example: 10000.00
+          minimum: 0.01
+        termMonths:
+          type: integer
+          description: Plazo del crédito en meses. Rango válido: 1 a 36 meses
+          example: 12
+          minimum: 1
+          maximum: 36
+        interestRate:
+          type: number
+          format: decimal
+          description: Tasa de interés anual en porcentaje. Mínimo: 0.01%
+          example: 12.50
+          minimum: 0.01
+        purpose:
+          type: string
+          description: Propósito del crédito (obligatorio para créditos empresariales)
+          example: "Compra de equipo de oficina"
+          nullable: true
+        collateralDescription:
+          type: string
+          description: Descripción del garantía ofrecida (aplicable a créditos hipotecarios)
+          example: "Inmueble ubicado en Av. Principal 123"
+          nullable: true
+
+    CreditResponseDto:
+      type: object
+      description: Respuesta detallada con la información completa de un crédito
+      properties:
+        id:
+          type: string
+          description: Identificador único del crédito
+          example: "cred-abc123"
+        customerId:
+          type: string
+          description: Identificador del cliente titular del crédito
+          example: "cust-12345"
+        type:
+          type: string
+          description: Tipo de crédito
+          enum: [PERSONAL, BUSINESS, MORTGAGE]
+          example: "PERSONAL"
+        status:
+          type: string
+          description: |
+            Estado actual del crédito.
+            - PENDING: solicitud pendiente de aprobación
+            - APPROVED: crédito aprobado pero no activado
+            - ACTIVE: crédito activo con pagos en curso
+            - PAID_OFF: crédito totalmente pagado
+            - OVERDUE: crédito en mora (cuotas vencidas > 30 días)
+            - CANCELLED: crédito cancelado
+          enum: [PENDING, APPROVED, ACTIVE, PAID_OFF, OVERDUE, CANCELLED]
+          example: "ACTIVE"
+        principalAmount:
+          type: number
+          format: decimal
+          description: Monto principal del crédito en USD
+          example: 10000.00
+        interestRate:
+          type: number
+          format: decimal
+          description: Tasa de interés anual en porcentaje
+          example: 12.50
+        termMonths:
+          type: integer
+          description: Plazo total del crédito en meses
+          example: 12
+        outstandingBalance:
+          type: number
+          format: decimal
+          description: Saldo pendiente actual del crédito en USD
+          example: 7500.00
+        nextDueDate:
+          type: string
+          format: date
+          description: Fecha de vencimiento de la próxima cuota (YYYY-MM-DD)
+          example: "2026-12-15"
+        firstDueDate:
+          type: string
+          format: date
+          description: Fecha de la primera cuota (YYYY-MM-DD)
+          example: "2026-11-15"
+        maturityDate:
+          type: string
+          format: date
+          description: Fecha de vencimiento final del crédito (YYYY-MM-DD)
+          example: "2027-10-15"
+        paymentFrequency:
+          type: string
+          description: Frecuencia de pago del crédito
+          example: "MONTHLY"
+        purpose:
+          type: string
+          description: Propósito del crédito (aplicable a créditos empresariales)
+          example: "Compra de equipo"
+          nullable: true
+        schedule:
+          type: array
+          description: Cronograma de pagos con el detalle de cada cuota
+          items:
+            $ref: '#/components/schemas/ScheduleInstallmentResponseDto'
+        approvedAt:
+          type: string
+          format: date-time
+          description: Fecha y hora de aprobación del crédito (ISO 8601)
+          example: "2026-11-14T10:30:00"
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          description: Fecha y hora de creación del crédito (ISO 8601)
+          example: "2026-11-14T10:00:00"
+        updatedAt:
+          type: string
+          format: date-time
+          description: Fecha y hora de última actualización (ISO 8601)
+          example: "2026-11-14T15:00:00"
+
+    CreatePaymentRequestDto:
+      type: object
+      required:
+        - amount
+      description: Solicitud para registrar un pago en un crédito existente
+      properties:
+        amount:
+          type: number
+          format: decimal
+          description: Monto del pago en moneda local (USD). Mínimo: 0.01
+          example: 500.00
+          minimum: 0.01
+        source:
+          type: string
+          description: |
+            Fuente del pago.
+            - OWN_ACCOUNT: desde cuenta propia del cliente
+            - THIRD_PARTY: desde cuenta de terceros
+            - CASH: pago en efectivo
+          enum: [OWN_ACCOUNT, THIRD_PARTY, CASH]
+          example: "OWN_ACCOUNT"
+          nullable: true
+        sourceAccountId:
+          type: string
+          description: Identificador de la cuenta de origen (obligatorio si source es OWN_ACCOUNT o THIRD_PARTY)
+          example: "acc-67890"
+          nullable: true
+        payerCustomerId:
+          type: string
+          description: Identificador del cliente que realiza el pago (obligatorio si source es THIRD_PARTY)
+          example: "cust-99999"
+          nullable: true
+        description:
+          type: string
+          description: Descripción opcional del pago
+          example: "Pago mensual de crédito"
+          nullable: true
+
+    PaymentResponseDto:
+      type: object
+      description: Respuesta con el detalle de un pago registrado en un crédito
+      properties:
+        id:
+          type: string
+          description: Identificador único del pago
+          example: "pay-xyz789"
+        creditId:
+          type: string
+          description: Identificador del crédito al que se aplicó el pago
+          example: "cred-abc123"
+        customerId:
+          type: string
+          description: Identificador del cliente titular del crédito
+          example: "cust-12345"
+        amount:
+          type: number
+          format: decimal
+          description: Monto total del pago en USD
+          example: 500.00
+        capitalPortion:
+          type: number
+          format: decimal
+          description: Porción del monto aplicada a capital en USD
+          example: 400.00
+        interestPortion:
+          type: number
+          format: decimal
+          description: Porción del monto aplicada a interés en USD
+          example: 80.00
+        feePortion:
+          type: number
+          format: decimal
+          description: Porción del monto aplicada a comisiones y mora en USD
+          example: 20.00
+        installmentNumber:
+          type: integer
+          description: Número de cuota al que se aplicó el pago
+          example: 3
+        dueDate:
+          type: string
+          format: date
+          description: Fecha de vencimiento de la cuota (YYYY-MM-DD)
+          example: "2026-12-15"
+        paidAt:
+          type: string
+          format: date-time
+          description: Fecha y hora en que se realizó el pago (ISO 8601)
+          example: "2026-11-14T14:30:00"
+        source:
+          type: string
+          description: Fuente del pago
+          enum: [OWN_ACCOUNT, THIRD_PARTY, CASH]
+          example: "OWN_ACCOUNT"
+        sourceAccountId:
+          type: string
+          description: Identificador de la cuenta de origen del pago
+          example: "acc-67890"
+          nullable: true
+        status:
+          type: string
+          description: Estado del pago
+          example: "COMPLETED"
+
+    ScheduleInstallmentResponseDto:
+      type: object
+      description: Detalle de una cuota individual del cronograma de pagos del crédito (sistema francés)
+      properties:
+        installmentNumber:
+          type: integer
+          description: Número secuencial de la cuota
+          example: 1
+        dueDate:
+          type: string
+          format: date
+          description: Fecha de vencimiento de la cuota (YYYY-MM-DD)
+          example: "2026-12-15"
+        capitalAmount:
+          type: number
+          format: decimal
+          description: Monto de capital de esta cuota en USD
+          example: 400.00
+        interestAmount:
+          type: number
+          format: decimal
+          description: Monto de interés de esta cuota en USD
+          example: 83.33
+        feeAmount:
+          type: number
+          format: decimal
+          description: Monto de comisiones y mora de esta cuota en USD
+          example: 0.00
+        totalAmount:
+          type: number
+          format: decimal
+          description: Monto total de la cuota (capital + interés + comisiones) en USD
+          example: 483.33
+        status:
+          type: string
+          description: |
+            Estado de la cuota.
+            - PENDING: cuota pendiente de pago
+            - PAID: cuota pagada
+            - OVERDUE: cuota vencida
+          enum: [PENDING, PAID, OVERDUE]
+          example: "PENDING"
+
+    UpdateCreditRequestDto:
+      type: object
+      required:
+        - interestRate
+      description: Solicitud para actualizar la tasa de interés de un crédito existente (reestructuración)
+      properties:
+        interestRate:
+          type: number
+          format: decimal
+          description: Nueva tasa de interés anual en porcentaje. Rango válido: 0.01 a 50.00
+          example: 10.50
+          minimum: 0.01
+          maximum: 50.00
+
+    UpdatePaymentRequestDto:
+      type: object
+      required:
+        - amount
+      description: Solicitud para corregir el monto de un pago registrado
+      properties:
+        amount:
+          type: number
+          format: decimal
+          description: Nuevo monto del pago. Debe ser mayor a cero
+          example: 1500.00
+          minimum: 0.01
+
+    ErrorDto:
+      type: object
+      description: Cuerpo estándar de error de la API Yanki
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Momento exacto en que se generó el error (ISO 8601)
+          example: "2024-01-15T10:30:00Z"
+        status:
+          type: integer
+          format: int32
+          description: Código de estado HTTP
+          example: 400
+        error:
+          type: string
+          description: Descripción textual del error HTTP
+          example: "Bad Request"
+        code:
+          type: string
+          description: Código de negocio específico del error
+          example: "INVALID_AMOUNT"
+        message:
+          type: string
+          description: Descripción legible del error en español
+          example: "El monto debe ser mayor a cero"
+        path:
+          type: string
+          description: Ruta de la API que originó el error
+          example: "/api/credits"
+        details:
+          type: object
+          description: Detalle adicional del error
+          additionalProperties: true
+          nullable: true
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token JWT obtenido mediante el endpoint /api/auth/login del auth-service
+
+security:
+  - BearerAuth: []

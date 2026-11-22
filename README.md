@@ -746,6 +746,7 @@ Para las reglas de arquitectura hexagonal, consultar: [`../../system-prompt-audi
 | `../../CASOS_PRUEBA/TRACEABILIDAD_POR_SERVICIO.md` | Sección 3 (credits-service) | Trazabilidad por microservicio |
 | `../../system-prompt-auditoria-hexagonal-yanki.md` | System prompt completo | Reglas obligatorias de auditoría hexagonal |
 | `test-cases/README.md` | Casos de prueba locales | Copia de CP-075 a CP-084 para referencia rápida |
+| `api/credits-service.yaml` | Contrato OpenAPI 3.0 | Especificación completa con schemas, endpoints y errores |
 | `Proyecto General vf.md` | Parte I § Créditos, Parte III § Mora transversal | Requisitos base compartidos |
 | `README.md` (root) | Arquitectura, eventos Kafka, vistas locales | Índice general del monorepo |
 | `AGENTS.md` (este servicio) | Especificación técnica completa | Reglas de agente y arquitectura |

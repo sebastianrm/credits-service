@@ -3,12 +3,12 @@
 ## Identidad del Agente
 
 - **Nombre:** `yanki-credits-agent`
-- **Versión:** 2.0.0
+- **Versión:** 2.3.0
 - **Servicio:** `credits-service`
 - **Puerto:** 8084
 - **Parte:** I / III (Core Banking + Event-Driven)
 - **Estado:** 🟢 Hexagonal implementado — 100% completado
-- **Última actualización:** 2026-11-14
+- **Última actualización:** 2026-11-22
 
 ---
 
@@ -82,7 +82,7 @@ El agente debe diseñar e implementar considerando explícitamente:
 | Programación Reactiva | Project Reactor, RxJava 3.1.10 para lógica de servicios y WebFlux |
 | Datos | Spring Data Reactive con MongoDB para acceso a base propia `yanki_credits` |
 | Caché | Redis reactivo usado para cálculos de cuotas y planes de amortización con TTL configurable |
-| Mensajería | Spring Kafka para producción y consumo de eventos de dominio (3 tópicos outbound, 5 inbound) |
+| Mensajería | Spring Kafka para producción y consumo de eventos de dominio (3 tópicos outbound, 4 inbound consumidos) |
 | Scheduling | Job reactivo diario para detectar créditos en mora (cron 02:00 UTC-5) |
 | Calidad y Testing | JaCoCo, 82 tests unitarios con Mockito (CP-075 a CP-084 + CRUD completo de Credit y Payment) |
 
@@ -101,7 +101,7 @@ El credits-service **cumple** con la Arquitectura Hexagonal requerida por las Re
 | Paquetes `domain`, `infrastructure`, `interfaces` | ✅ Cumple | Estructura hexagonal completa |
 | Entidades sin `@Document` en `domain.model` | ✅ Cumple | `@Document` solo en `infrastructure.persistence.document` |
 | Puertos de entrada (`domain.port.in`) | ✅ Cumple | 7 puertos: CreateCredit, ListCredits, RegisterPayment, UpdateCredit, CancelCredit, UpdatePayment, ReversePayment |
-| Puertos de salida (`domain.port.out`) | ✅ Cumple | 7 puertos: Persistence, EventPublisher, Cache, Profile, Risk, Overdue |
+| Puertos de salida (`domain.port.out`) | ✅ Cumple | 9 archivos: 7 puertos (Persistence, EventPublisher, Cache, Profile, Risk, Overdue) + 2 interfaces de vista (CustomerProfileView, CustomerRiskView) |
 | Adaptadores de infraestructura | ✅ Cumple | MongoDB, Redis, Kafka, Job, OpenAPI |
 | Controlador inyecta puertos de entrada | ✅ Cumple | `CreditController` inyecta `*UseCase` interfaces |
 | RxJava 3 en dominio | ✅ Cumple | `Single`, `Maybe`, `Flowable`, `Completable` de `io.reactivex.rxjava3.core` |
@@ -132,27 +132,29 @@ com.yanki.credits
 │   │              UpdateCreditService.java, CancelCreditService.java,
 │   │              UpdatePaymentService.java, ReversePaymentService.java,
 │   │              OverdueDetectionService.java
-│   ├── event/CreditOpenedEvent.java, CreditPaymentRegisteredEvent.java, CreditOverdueEvent.java
-│   └── exception/BusinessException.java
+│   ├── event/CreditEvent.java, CreditOpenedEvent.java, CreditPaymentRegisteredEvent.java, CreditOverdueEvent.java,
+│   │              CustomerRegisteredEvent.java, CustomerUpdatedEvent.java, CustomerDeletedEvent.java
+│   └── exception/BusinessException.java, CreditNotFoundException.java
 ├── infrastructure
-│   ├── persistence/document/CreditDocument.java, PaymentDocument.java,
+│   ├── persistence/document/CreditDocument.java, PaymentDocument.java, ScheduleInstallmentDocument.java,
 │   │                     CustomerProfileViewDocument.java, CustomerRiskViewDocument.java
 │   ├── persistence/repository/SpringDataCreditRepository.java, SpringDataPaymentRepository.java,
 │   │                     SpringDataCustomerProfileRepository.java, SpringDataCustomerRiskRepository.java
-│   ├── persistence/mapper/CreditDocumentMapper.java, PaymentDocumentMapper.java
+│   ├── persistence/mapper/CreditDocumentMapper.java, PaymentDocumentMapper.java, ScheduleInstallmentDocumentMapper.java
 │   ├── persistence/adapter/CreditMongoAdapter.java, PaymentMongoAdapter.java,
-│   │                     CustomerProfileAdapter.java, CustomerRiskAdapter.java
+│   │                     CustomerProfileAdapter.java, CustomerRiskAdapter.java, OverdueDetectionAdapter.java
 │   ├── cache/adapter/CacheRedisAdapter.java
 │   ├── messaging/adapter/CreditKafkaPublisherAdapter.java
 │   ├── messaging/consumer/CustomerProfileConsumer.java, CustomerRiskConsumer.java
 │   ├── job/OverdueJob.java
-│   └── config/OpenApiConfig.java
+│   └── config/KafkaConsumerConfig.java
 └── interfaces/rest
     ├── controller/CreditController.java
     ├── dto/CreateCreditRequestDto.java, CreatePaymentRequestDto.java, CreditResponseDto.java,
     │              PaymentResponseDto.java, ScheduleInstallmentResponseDto.java,
     │              UpdateCreditRequestDto.java, UpdatePaymentRequestDto.java, ErrorDto.java
     ├── mapper/CreditRestMapper.java
+    ├── config/OpenApiConfig.java
     └── GlobalExceptionHandler.java
 ```
 
@@ -212,8 +214,7 @@ Ante cualquier tarea de auditoría, refactorización o implementación de arquit
 | `yanki.customer.registered.v1` | Registro de nuevo cliente | `customer_profile_view` |
 | `yanki.customer.updated.v1` | Actualización de perfil/tipo | `customer_profile_view` |
 | `yanki.customer.deleted.v1` | Bloqueo o baja lógica del cliente | `customer_profile_view` |
-| `yanki.card.opened.v1` | Apertura de tarjeta para scoring | `customer_card_view` |
-| `yanki.debit.payment.settled.v1` | Confirmación/rechazo de débito para pago de crédito | Conciliación de pagos |
+| `yanki.credit.overdue.v1` | Mora detectada (autoconsumo) | `customer_risk_view` |
 
 ---
 
@@ -368,7 +369,7 @@ curl http://localhost:8084/actuator/health
 | `../../DIAGRAMAS_SECUENCIAS/SEC029_consulta_credito_cronograma.md` | Diagrama | Consulta crédito y cronograma |
 | `../../CONVENTIONS.md` | Convenciones técnicas | Stack, estilo de código, testing |
 | `../../docs/EVENTOS.md` | Catálogo Kafka | Eventos publicados y consumidos |
-| `src/main/java/com/yanki/credits` | Código fuente | Implementación hexagonal completa (69 archivos main + 8 test = 77 total) |
+| `src/main/java/com/yanki/credits` | Código fuente | Implementación hexagonal completa (75 archivos main + 8 test = 83 total, 82 @Test) |
 
 ---
 
@@ -380,3 +381,4 @@ curl http://localhost:8084/actuator/health
 | 2026-11-14 | 2.0.0 | Sistema | Auditoría hexagonal completa, diagnóstico de violaciones, plan de reestructuración, reglas críticas, CPs corregidos (CP-075 a CP-084), referencias bidireccionales |
 | 2026-11-14 | 2.1.0 | Sistema | Refactorización hexagonal completada: dominio puro, puertos, adaptadores, CRUD completo de Credit, 63 tests pasando, Swagger completo, AUDITORIA.md actualizado |
 | 2026-11-14 | 2.2.0 | Sistema | CRUD completo de Payment: UPDATE (corrección) y DELETE (reversa), 12 endpoints, 82 tests, servicio 100% completado |
+| 2026-11-22 | 2.3.0 | Sistema | Actualización de documentación: estructura de código corregida, archivos nuevos documentados, endpoints verificados, Kafka topics actualizados |

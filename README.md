@@ -1,11 +1,11 @@
-# credits-service
+﻿# credits-service
 
 Microservicio de **créditos activos** de la plataforma bancaria **Yanki**.
 
 Gestiona productos de crédito, como personal, empresarial e hipotecario. Ofrece funcionalidades para control de apertura de créditos, pagos, amortización, detección de mora y restricciones de productos a causa de mora.
 
 - **Puerto:** `8084`
-- **Base de datos propia:** MongoDB `yanki_credits` (colecciones: `credits`, `payments`, `customer_profile_view`, `customer_card_view`)
+- **Base de datos propia:** MongoDB `yanki_credits` (colecciones: `credits`, `payments`, `customer_profile_view`, `customer_risk_view`)
 - **Cache:** Redis (cálculos de cuotas, saldos, plan amortización TTL configurable)
 - **Stack:** Java 17, Spring Boot 3.3.5, Spring WebFlux, Spring Data Reactive (MongoDB + Redis), RxJava 3, Spring Kafka, springdoc-openapi
 
@@ -194,21 +194,6 @@ Base: `/api/credits`
 - `500 Internal Server Error`: error interno al ejecutar el job.
 - `503 Service Unavailable`: dependencias críticas no disponibles.
 
-#### `POST /api/credits/{id}/restructure`
-**Casos de éxito**
-- `200 OK`: reestructuración aplicada exitosamente.
-- `202 Accepted`: reestructuración enviada a evaluación asíncrona.
-
-**Casos de error**
-- `400 Bad Request`: solicitud inválida, términos no permitidos o payload inconsistente.
-- `401 Unauthorized`: ausencia de JWT o token inválido.
-- `403 Forbidden`: crédito no elegible para reestructuración o cliente bloqueado.
-- `404 Not Found`: `CREDIT_NOT_FOUND`.
-- `409 Conflict`: crédito ya reestructurado recientemente o estado incompatible.
-- `422 Unprocessable Entity`: incumplimiento de reglas de negocio para reestructuración.
-- `500 Internal Server Error`: error interno no controlado.
-- `503 Service Unavailable`: dependencias críticas no disponibles.
-
 ### 2.1 Ejemplos
 
 ```bash
@@ -379,8 +364,7 @@ flowchart TD
 | `yanki.customer.registered.v1` | Nuevo cliente | `customer_profile_view` |
 | `yanki.customer.updated.v1` | Cambio perfil/tipo | `customer_profile_view` |
 | `yanki.customer.deleted.v1` | Baja lógica / bloqueo del cliente | `customer_profile_view` |
-| `yanki.card.opened.v1` | Tarjeta abierta | `customer_card_view` (scoring) |
-| `yanki.debit.payment.settled.v1` | Confirmación/rechazo de débito para pago de crédito | conciliación de pagos iniciados con débito |
+| `yanki.credit.overdue.v1` | Mora detectada (autoconsumo) | `customer_risk_view` |
 
 ---
 
@@ -389,12 +373,11 @@ flowchart TD
 | Colección | Alimentada por | Uso |
 |---|---|---|
 | `customer_profile_view` | `customer.registered/updated/deleted` | Límite 1 crédito personal, múltiples empresarial, estado del cliente |
-| `customer_card_view` | `card.opened` | Reportes, scoring y reglas complementarias |
-| `customer_risk_view` | `credit.overdue` o proyección interna de riesgo | validaciones de bloqueo y elegibilidad local si se decide materializarla |
+| `customer_risk_view` | `credit.overdue.v1` (autoconsumo) | Validación de bloqueo por deuda vencida y elegibilidad local |
 
-### 5.1 Decisión de diseño para implementación autónoma
+### 5.1 Notas de diseño
 
-Aunque la versión mínima puede operar con `customer_profile_view` y `customer_card_view`, para una implementación robusta se recomienda materializar también `customer_risk_view` dentro de `credits-service` si la lógica de originación necesita verificar deuda vencida de forma local y consistente.
+- `customer_card_view` y el consumo de `yanki.card.opened.v1` / `yanki.debit.payment.settled.v1` están definidos en la especificación funcional pero **no implementados** en la versión actual. Se planifican para futuras iteraciones de scoring y conciliación de pagos.
 
 ---
 
@@ -439,6 +422,8 @@ public class Payment {
     LocalDateTime paidAt;
     String source;               // OWN_ACCOUNT | THIRD_PARTY | CASH
     String sourceAccountId;
+    String payerCustomerId;      // Cliente pagador si es pago de terceros
+    String status;               // COMPLETED | CORRECTED | REVERSED
     LocalDateTime createdAt;
 }
 ```
@@ -490,21 +475,21 @@ public class Payment {
 
 ## 9. Cómo Ejecutarlo
 
-### 8.1 Desarrollo
+### 9.1 Desarrollo
 ```powershell
 $env:JAVA_HOME="C:\Program Files\Java\jdk-17.0.21.0.3"
 $env:PATH="$env:JAVA_HOME\bin;$env:PATH"
-mvn spring-boot:run
+.\mvnw.cmd spring-boot:run
 ```
 
-### 8.2 Build y Pruebas
+### 9.2 Build y Pruebas
 ```powershell
 $env:JAVA_HOME="C:\Program Files\Java\jdk-17.0.21.0.3"
 $env:PATH="$env:JAVA_HOME\bin;$env:PATH"
-mvn clean verify
+.\mvnw.cmd clean verify
 ```
 
-### 8.2 Docker
+### 9.3 Docker
 ```bash
 docker build -t yanki/credits-service:1.0.0 .
 docker run -p 8084:8084 \
@@ -514,7 +499,7 @@ docker run -p 8084:8084 \
   yanki/credits-service:1.0.0
 ```
 
-### 8.3 Salud
+### 9.4 Salud
 ```bash
 curl http://localhost:8084/actuator/health
 ```
@@ -561,9 +546,9 @@ src/main/java/com/yanki/credits
 │   ├── model
 │   │   ├── Credit.java                        # Entidad pura con BigDecimal, java.time, builder
 │   │   ├── Payment.java                       # Entidad pura de pagos
-│   │   ├── ScheduleInstallment.java           # Java record inmutable
-│   │   ├── CreditStatus.java                  # Enum: ACTIVE, PAID_OFF, CANCELLED, OVERDUE
-│   │   ├── CreditType.java                    # Enum: PERSONAL, BUSINESS
+│   │   ├── ScheduleInstallment.java           # Entidad pura de cuotas del cronograma
+│   │   ├── CreditStatus.java                  # Enum: PENDING, APPROVED, ACTIVE, PAID_OFF, OVERDUE, CANCELLED
+│   │   ├── CreditType.java                    # Enum: PERSONAL, BUSINESS, MORTGAGE
 │   │   └── PaymentSource.java                 # Enum: OWN_ACCOUNT, THIRD_PARTY, CASH
 │   ├── port
 │   │   ├── in
@@ -571,14 +556,18 @@ src/main/java/com/yanki/credits
 │   │   │   ├── ListCreditsUseCase.java        # Puerto de entrada con RxJava 3 (Flowable)
 │   │   │   ├── RegisterPaymentUseCase.java    # Puerto de entrada con RxJava 3 (Single)
 │   │   │   ├── UpdateCreditUseCase.java       # Puerto de entrada con RxJava 3 (Single)
-│   │   │   └── CancelCreditUseCase.java       # Puerto de entrada con RxJava 3 (Single)
+│   │   │   ├── CancelCreditUseCase.java       # Puerto de entrada con RxJava 3 (Single)
+│   │   │   ├── UpdatePaymentUseCase.java      # Puerto de entrada con RxJava 3 (Single)
+│   │   │   └── ReversePaymentUseCase.java     # Puerto de entrada con RxJava 3 (Single)
 │   │   └── out
 │   │       ├── CreditPersistencePort.java     # Puerto de salida: CRUD de créditos
 │   │       ├── PaymentPersistencePort.java    # Puerto de salida: CRUD de pagos
 │   │       ├── CreditEventPublisherPort.java  # Puerto de salida: publicación de eventos Kafka
 │   │       ├── CachePort.java                 # Puerto de salida: caché Redis
 │   │       ├── CustomerProfilePort.java       # Puerto de salida: vista de perfil
+│   │       ├── CustomerProfileView.java       # Interfaz de vista de perfil
 │   │       ├── CustomerRiskPort.java          # Puerto de salida: vista de riesgo
+│   │       ├── CustomerRiskView.java          # Interfaz de vista de riesgo
 │   │       └── OverdueDetectionPort.java      # Puerto de salida: detección de mora
 │   ├── service
 │   │   ├── CreateCreditService.java           # Scoring, bloqueo por deuda, cronograma francés
@@ -586,19 +575,27 @@ src/main/java/com/yanki/credits
 │   │   ├── RegisterPaymentService.java        # Registro de pagos con invalidación de caché
 │   │   ├── UpdateCreditService.java           # Reestructuración con nueva tasa
 │   │   ├── CancelCreditService.java           # Cancelación con validación de estado
+│   │   ├── UpdatePaymentService.java          # Corrección de monto de pago
+│   │   ├── ReversePaymentService.java         # Reversa de pago registrado
 │   │   └── OverdueDetectionService.java       # Detección de mora >30 días
 │   ├── event
+│   │   ├── CreditEvent.java                   # Clase base para eventos de crédito
 │   │   ├── CreditOpenedEvent.java             # Java record: evento de apertura
 │   │   ├── CreditPaymentRegisteredEvent.java  # Java record: evento de pago
-│   │   └── CreditOverdueEvent.java            # Java record: evento de mora
+│   │   ├── CreditOverdueEvent.java            # Java record: evento de mora
+│   │   ├── CustomerRegisteredEvent.java       # Java record: evento de registro de cliente
+│   │   ├── CustomerUpdatedEvent.java          # Java record: evento de actualización de cliente
+│   │   └── CustomerDeletedEvent.java          # Java record: evento de baja de cliente
 │   └── exception
-│       └── BusinessException.java             # Excepción de negocio con código y mensaje
+│       ├── BusinessException.java             # Excepción de negocio con código y mensaje
+│       └── CreditNotFoundException.java       # Excepción específica para crédito no encontrado
 │
 ├── infrastructure                              # [ADAPTADORES SECUNDARIOS]
 │   ├── persistence
 │   │   ├── document
 │   │   │   ├── CreditDocument.java            # @Document con @Id para MongoDB
 │   │   │   ├── PaymentDocument.java           # @Document con @Id para MongoDB
+│   │   │   ├── ScheduleInstallmentDocument.java
 │   │   │   ├── CustomerProfileViewDocument.java
 │   │   │   └── CustomerRiskViewDocument.java
 │   │   ├── repository
@@ -608,10 +605,14 @@ src/main/java/com/yanki/credits
 │   │   │   └── SpringDataCustomerRiskRepository.java
 │   │   ├── mapper
 │   │   │   ├── CreditDocumentMapper.java      # domain ↔ document estático
-│   │   │   └── PaymentDocumentMapper.java     # domain ↔ document estático
+│   │   │   ├── PaymentDocumentMapper.java     # domain ↔ document estático
+│   │   │   └── ScheduleInstallmentDocumentMapper.java
 │   │   └── adapter
 │   │       ├── CreditMongoAdapter.java        # Implementa CreditPersistencePort
-│   │       └── PaymentMongoAdapter.java       # Implementa PaymentPersistencePort
+│   │       ├── PaymentMongoAdapter.java       # Implementa PaymentPersistencePort
+│   │       ├── CustomerProfileAdapter.java    # Implementa CustomerProfilePort
+│   │       ├── CustomerRiskAdapter.java       # Implementa CustomerRiskPort
+│   │       └── OverdueDetectionAdapter.java   # Implementa OverdueDetectionPort
 │   ├── cache
 │   │   └── adapter
 │   │       └── CacheRedisAdapter.java         # Implementa CachePort con Redis reactive
@@ -624,7 +625,7 @@ src/main/java/com/yanki/credits
 │   ├── job
 │   │   └── OverdueJob.java                   # Job programado 02:00 AM para mora
 │   └── config
-│       └── OpenApiConfig.java                # Configuración Swagger/OpenAPI
+│       └── KafkaConsumerConfig.java           # Configuración de factories Kafka consumer
 │
 └── interfaces
     └── rest
@@ -637,9 +638,12 @@ src/main/java/com/yanki/credits
         │   ├── PaymentResponseDto.java        # Java record con @Schema
         │   ├── ScheduleInstallmentResponseDto.java
         │   ├── UpdateCreditRequestDto.java    # Java record con @Schema
+        │   ├── UpdatePaymentRequestDto.java   # Java record con @Schema
         │   └── ErrorDto.java                  # DTO estandarizado de errores
         ├── mapper
         │   └── CreditRestMapper.java          # DTO ↔ Domain mapper estático
+        ├── config
+        │   └── OpenApiConfig.java             # Configuración Swagger/OpenAPI
         └── GlobalExceptionHandler.java        # Manejo centralizado de errores
 ```
 
@@ -650,7 +654,7 @@ src/main/java/com/yanki/credits
 | Paquetes `domain`, `infrastructure`, `interfaces` | ✅ Cumple | Estructura hexagonal completa |
 | Entidades sin `@Document` en `domain.model` | ✅ Cumple | `@Document` solo en `infrastructure.persistence.document` |
 | Puertos de entrada (`domain.port.in`) | ✅ Cumple | 7 puertos: CreateCredit, ListCredits, RegisterPayment, UpdateCredit, CancelCredit, UpdatePayment, ReversePayment |
-| Puertos de salida (`domain.port.out`) | ✅ Cumple | 7 puertos: Persistence, EventPublisher, Cache, Profile, Risk, Overdue |
+| Puertos de salida (`domain.port.out`) | ✅ Cumple | 9 archivos: 7 puertos (Persistence, EventPublisher, Cache, Profile, Risk, Overdue) + 2 interfaces de vista (CustomerProfileView, CustomerRiskView) |
 | Adaptadores de infraestructura | ✅ Cumple | MongoDB, Redis, Kafka, Job, OpenAPI |
 | Controlador inyecta puertos de entrada | ✅ Cumple | `CreditController` inyecta `*UseCase` interfaces |
 | RxJava 3 en dominio | ✅ Cumple | `Single`, `Maybe`, `Flowable`, `Completable` de `io.reactivex.rxjava3.core` |
@@ -658,7 +662,7 @@ src/main/java/com/yanki/credits
 | `java.time` para fechas | ✅ Cumple | `LocalDate`, `LocalDateTime` en lugar de `Date` |
 | Consumidores Kafka | ✅ Cumple | `CustomerProfileConsumer`, `CustomerRiskConsumer` |
 | Javadoc en español | ✅ Cumple | Todos los archivos públicos con Javadoc en español |
-| Eventos de dominio como records | ✅ Cumple | 3 eventos: CreditOpened, CreditPaymentRegistered, CreditOverdue |
+| Eventos de dominio | ✅ Cumple | 7 archivos: CreditEvent (base), 3 outbound (Opened, PaymentRegistered, Overdue), 3 inbound (CustomerRegistered, CustomerUpdated, CustomerDeleted) |
 | Sin `.block()` / `.blockingGet()` | ✅ Cumple | Sin bloqueos reactivos detectados |
 | Sin imports de Spring Data/Kafka/Web en domain | ✅ Cumple | Dominio 100% puro |
 
@@ -709,12 +713,14 @@ El credits-service **cumple completamente** con la Arquitectura Hexagonal requer
 - ✅ Servicios de dominio inyectan puertos de salida (`domain.port.out`), no repositorios concretos
 - ✅ Controlador inyecta puertos de entrada (`domain.port.in`), no servicios concretos
 - ✅ Dominio usa RxJava 3 (`Single`, `Maybe`, `Flowable`, `Completable`)
-- ✅ 7 puertos de entrada y 6 puertos de salida implementados
-- ✅ Adaptadores de infraestructura para MongoDB, Redis, Kafka y Job
+- ✅ 7 puertos de entrada y 9 archivos de puertos de salida implementados (7 puertos + 2 interfaces de vista)
+- ✅ 8 servicios de dominio: CreateCredit, ListCredits, RegisterPayment, UpdateCredit, CancelCredit, UpdatePayment, ReversePayment, OverdueDetection
+- ✅ Adaptadores de infraestructura para MongoDB (5), Redis, Kafka y Job
 - ✅ `BigDecimal` para todos los montos
 - ✅ `java.time` (`LocalDate`, `LocalDateTime`) para todas las fechas
 - ✅ 2 consumidores Kafka implementados: `CustomerProfileConsumer`, `CustomerRiskConsumer`
-- ✅ 3 eventos de dominio como Java records
+- ✅ 7 eventos de dominio: 3 outbound + 3 inbound + 1 clase base
+- ✅ 75 archivos Java en src/main + 8 archivos de test (82 @Test)
 - ✅ Javadoc en español en todos los archivos públicos
 - ✅ Sin `.block()`, `.blockingGet()`, ni `Thread.sleep()`
 - ✅ Sin imports de Spring Data/Kafka/Web en `domain/`
